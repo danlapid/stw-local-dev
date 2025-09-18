@@ -9,8 +9,13 @@
 		"test": "vitest",
 		"cf-typegen": "wrangler types"
 	},
+	"dependencies": {
+		"@opentelemetry/api": "^1.8.0",
+		"@opentelemetry/semantic-conventions": "^1.22.0"
+	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.8.19",
+		"@types/node": "^20.11.17",
 		"typescript": "^5.5.2",
 		"vitest": "~3.2.0",
 		"wrangler": "https://pkg.pr.new/wrangler@10703"
