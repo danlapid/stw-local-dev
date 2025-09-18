@@ -12,7 +12,41 @@
  */
 
 export default {
+	async tail(events) {
+		console.log(JSON.stringify(events));
+	},
+	tailStream(event, env, ctx) {
+		console.log("onset")
+		return (event) => {
+			switch (event.event.type) {
+			  case 'spanOpen':
+				console.log("spanOpen", {
+				  name: event.event.name,
+				});
+				break;
+			  case 'attributes': {
+				console.log("attributes")
+				break;
+			  }
+			  case 'log': {
+				console.log("log")
+				break;
+			  }
+			  case 'spanClose': {
+				console.log("spanClose")
+				break;
+			  }
+			  case 'outcome':
+				console.log("outcome")
+				break;
+			}
+		  };
+	},
 	async fetch(request, env, ctx): Promise<Response> {
-		return new Response('Hello World!');
+		console.log("fetch")
+		let res = await fetch("https://api.ipify.org?format=json")
+		let json = await res.json()
+
+		return new Response(`Hello World! ${json.ip}`);
 	},
 } satisfies ExportedHandler<Env>;
