@@ -8,7 +8,8 @@ interface OtelSpan {
 	startTime: number;
 	endTime?: number;
 	tags: Record<string, any>;
-	logs: Array<{ timestamp: number; fields: Record<string, any> }>;
+	events: Array<{ timestamp: number; name: string; attributes: Record<string, any> }>;
+	logs: Array<{ timestamp: number; fields: Record<string, any> }>; // Keep logs for actual console.log
 	status?: { code: SpanStatusCode; message?: string };
 }
 
@@ -64,6 +65,7 @@ class CloudflareToOtelConverter {
 			operationName: this.getOperationName(onset.info),
 			startTime: timestamp.getTime() * 1000000,
 			tags: this.extractTags(onset),
+			events: [],
 			logs: []
 		};
 
@@ -81,6 +83,7 @@ class CloudflareToOtelConverter {
 			operationName: spanOpen.name,
 			startTime: timestamp.getTime() * 1000000,
 			tags: spanOpen.info ? this.extractSpanInfo(spanOpen.info) : {},
+			events: [],
 			logs: []
 		};
 
@@ -153,12 +156,45 @@ class CloudflareToOtelConverter {
 	}
 
 	private handleReturn(event: TailStream.TailEvent<TailStream.Return>) {
-		const { event: returnEvent, spanContext } = event;
-		// spanContext.spanId tells us which span this return belongs to
-		const span = this.spans.get(spanContext.spanId!);
+		const { event: returnEvent, spanContext, timestamp } = event;
 
-		if (span && returnEvent.info?.type === 'fetch') {
-			span.tags['http.response.status_code'] = returnEvent.info.statusCode;
+		// Return event should be marked on the root span (the main invocation)
+		// Find the root span (span without parent)
+		const rootSpan = Array.from(this.spans.values()).find(span => !span.parentSpanId);
+
+		if (rootSpan) {
+			// Add a proper OTEL span event to mark when the handler returned
+			rootSpan.events.push({
+				timestamp: timestamp.getTime() * 1000000,
+				name: 'handler.return',
+				attributes: {
+					'event.description': 'Worker handler returned response',
+					'execution.phase': 'handler_complete',
+					'note': 'Worker may continue executing ctx.waitUntil promises and streaming responses'
+				}
+			});
+
+			// Add response information if available
+			if (returnEvent.info?.type === 'fetch') {
+				rootSpan.tags['http.response.status_code'] = returnEvent.info.statusCode;
+				rootSpan.events.push({
+					timestamp: timestamp.getTime() * 1000000,
+					name: 'response.sent',
+					attributes: {
+						'http.response.status_code': returnEvent.info.statusCode.toString(),
+						'response.type': 'fetch'
+					}
+				});
+			}
+
+			// Mark this timestamp for potential use in span analysis
+			rootSpan.tags['handler.return.timestamp'] = timestamp.getTime();
+		}
+
+		// Also mark on the specific span if different from root
+		const contextSpan = this.spans.get(spanContext.spanId!);
+		if (contextSpan && contextSpan !== rootSpan && returnEvent.info?.type === 'fetch') {
+			contextSpan.tags['http.response.status_code'] = returnEvent.info.statusCode;
 		}
 	}
 
@@ -347,14 +383,26 @@ class CloudflareToOtelConverter {
 							key,
 							value: this.convertAttributeValue(value)
 						})),
-						events: span.logs.map(log => ({
-							timeUnixNano: log.timestamp.toString(),
-							name: 'log',
-							attributes: Object.entries(log.fields).map(([key, value]) => ({
-								key,
-								value: this.convertAttributeValue(value)
+						events: [
+							// Add proper OTEL span events
+							...span.events.map(event => ({
+								timeUnixNano: event.timestamp.toString(),
+								name: event.name,
+								attributes: Object.entries(event.attributes).map(([key, value]) => ({
+									key,
+									value: this.convertAttributeValue(value)
+								}))
+							})),
+							// Add console logs as log events
+							...span.logs.map(log => ({
+								timeUnixNano: log.timestamp.toString(),
+								name: 'log',
+								attributes: Object.entries(log.fields).map(([key, value]) => ({
+									key,
+									value: this.convertAttributeValue(value)
+								}))
 							}))
-						})),
+						],
 						status: span.status ? {
 							code: span.status.code,
 							message: span.status.message
@@ -394,13 +442,13 @@ export default {
 		console.log(JSON.stringify(events));
 	},
 
-	tailStream(initialOnset: TailStream.TailEvent<TailStream.Onset>, env: Env, _ctx: ExecutionContext): TailStream.TailEventHandlerType {
+	tailStream(initialOnset: TailStream.TailEvent, env: Env, _ctx: ExecutionContext): TailStream.TailEventHandlerType {
 		const converter = new CloudflareToOtelConverter(env.OTEL_ENDPOINT);
 
 		// Handle the initial onset event immediately
 		converter.handleEvent(initialOnset);
 
-		return (event: TailStream.TailEvent<TailStream.EventType>) => {
+		return (event: TailStream.TailEvent) => {
 			converter.handleEvent(event);
 		};
 	},
@@ -576,7 +624,7 @@ export default {
 			console.log("Demo completed successfully");
 
 			// Return comprehensive response
-			return new Response(JSON.stringify({
+			const response = new Response(JSON.stringify({
 				message: "Cloudflare Workers Bindings Demo - Complete!",
 				summary: {
 					operations_performed: results.operations.length,
@@ -594,6 +642,23 @@ export default {
 				}
 			});
 
+			// Demonstrate work continuing after response returned via ctx.waitUntil
+			ctx.waitUntil((async () => {
+				console.log("Handler returned, but work continues via ctx.waitUntil...");
+
+				// Sleep for 20ms to show async work after response
+				await new Promise(resolve => setTimeout(resolve, 20));
+
+				// Do a KV operation to show trace extension
+				const postResponseData = await env.CACHE_KV.get("post-response-demo");
+				console.log("Post-response KV get completed:", postResponseData || "null");
+
+				// Store a timestamp to show the work was done
+				await env.CACHE_KV.put("last-post-response", new Date().toISOString());
+			})());
+
+			return response;
+
 		} catch (error) {
 			console.error("Demo failed:", error);
 			return new Response(JSON.stringify({
@@ -609,7 +674,7 @@ export default {
 	},
 
 	// Queue consumer for analytics
-	async queue(batch: MessageBatch<any>, env: Env, ctx: ExecutionContext): Promise<void> {
+	async queue(batch: MessageBatch<any>, env: Env, _ctx: ExecutionContext): Promise<void> {
 		console.log(`Processing ${batch.messages.length} analytics events`);
 
 		// Ensure analytics table exists
