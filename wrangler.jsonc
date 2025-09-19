@@ -12,13 +12,60 @@
 	},
 	"streaming_tail_consumers": [
 		{
-			"service": "stw-local-dev",
+			"service": "stw-local-dev"
 		}
 	],
 	"compatibility_flags": [
 		"streaming_tail_worker"
 	],
 	"vars": {
-		"OTEL_ENDPOINT": "http://localhost:4318/v1/traces"
+		"OTEL_ENDPOINT": "http://localhost:4318/v1/traces",
+		"ENVIRONMENT": "development",
+		"API_SECRET": "demo-secret-key"
+	},
+	"kv_namespaces": [
+		{
+			"binding": "CACHE_KV",
+			"id": "cache-namespace-id",
+			"preview_id": "cache-namespace-preview-id"
+		},
+		{
+			"binding": "USER_DATA",
+			"id": "user-data-namespace-id",
+			"preview_id": "user-data-namespace-preview-id"
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "demo-database",
+			"database_id": "demo-database-id"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "ASSETS",
+			"bucket_name": "demo-assets-bucket"
+		},
+		{
+			"binding": "UPLOADS",
+			"bucket_name": "demo-uploads-bucket"
+		}
+	],
+	"queues": {
+		"producers": [
+			{
+				"binding": "ANALYTICS_QUEUE",
+				"queue": "analytics-queue"
+			}
+		],
+		"consumers": [
+			{
+				"queue": "analytics-queue",
+				"max_batch_size": 10,
+				"max_batch_timeout": 5,
+				"max_retries": 3
+			}
+		]
 	}
 }
